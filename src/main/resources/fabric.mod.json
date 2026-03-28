@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "George Client",
+  "id": "george-client",
+  "version": "${version}",
+  "description": "George Client for Fabric.",
+  "authors": [
+    "MineGame159",
+    "squidoodly",
+    "seasnail"
+  ],
+  "contact": {},
+  "license": "GPL-3.0",
+  "icon": "assets/george-client/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "meteordevelopment.meteorclient.MeteorClient"
+    ],
+    "modmenu": [
+      "meteordevelopment.meteorclient.modintegration.ModMenuIntegration"
+    ]
+  },
+  "mixins": [
+    "george-client.mixins.json",
+    "george-client-baritone.mixins.json",
+    "george-client-bobby.mixins.json",
+    "george-client-indigo.mixins.json",
+    "george-client-sodium.mixins.json",
+    "george-client-lithium.mixins.json",
+    "george-client-viafabricplus.mixins.json"
+  ],
+  "accessWidener": "george-client.accesswidener",
+  "custom": {
+    "george-client:build_number": "${build_number}",
+    "george-client:color": "145,61,226",
+    "george-client:commit": "${commit}",
+    "badoptimizations:cache_hooks": {
+      "lightmap": "meteordevelopment.meteorclient.modintegration.BadOptimizationsHook"
+    }
+  },
+  "depends": {
+    "java": ">=21",
+    "minecraft": ["${minecraft_version}"],
+    "fabricloader": ">=${loader_version}"
+  },
+  "breaks": {
+    "optifabric": "*",
+    "feather": "*",
+    "origins": "*",
+    "sodium": "<0.7.0",
+    "morechathistory": "*",
+    "lithium": "<0.21.3"
+  }
+}

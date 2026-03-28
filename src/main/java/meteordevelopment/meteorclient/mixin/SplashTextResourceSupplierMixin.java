@@ -1,0 +1,51 @@
+/*
+ * This file is part of the Meteor Client distribution (https://github.com/MeteorDevelopment/meteor-client).
+ * Copyright (c) Meteor Development.
+ */
+
+package meteordevelopment.meteorclient.mixin;
+
+import meteordevelopment.meteorclient.systems.config.Config;
+import net.minecraft.client.gui.screen.SplashTextRenderer;
+import net.minecraft.client.resource.SplashTextResourceSupplier;
+import net.minecraft.text.Text;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+import java.util.List;
+import java.util.Random;
+
+@Mixin(SplashTextResourceSupplier.class)
+public abstract class SplashTextResourceSupplierMixin {
+    @Unique
+    private boolean override = true;
+    @Unique
+    private static final Random random = new Random();
+    @Unique
+    private final List<String> meteorSplashes = getMeteorSplashes();
+
+    @Inject(method = "get", at = @At("HEAD"), cancellable = true)
+    private void onApply(CallbackInfoReturnable<SplashTextRenderer> cir) {
+        if (Config.get() == null || !Config.get().titleScreenSplashes.get()) return;
+
+        if (override) cir.setReturnValue(new SplashTextRenderer(Text.literal(meteorSplashes.get(random.nextInt(meteorSplashes.size())))));
+        override = !override;
+    }
+
+    @Unique
+    private static List<String> getMeteorSplashes() {
+        return List.of(
+                "George on Crack!",
+                "George Client",
+                "Based utility mod.",
+                "§6MineGame159 §fbased god",
+                "§4George Client",
+                "§4George on Crack!",
+                "§6George on Crack!"
+        );
+    }
+
+}

@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "meteordevelopment.meteorclient.mixin.bobby",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "meteordevelopment.meteorclient.MixinPlugin",
+  "client": [
+    "FakeChunkManagerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
