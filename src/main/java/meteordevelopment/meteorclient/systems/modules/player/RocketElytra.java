@@ -140,7 +140,7 @@ public class RocketElytra extends Module {
     private boolean jumpedSinceLastLandingReset = false;
 
     public RocketElytra() {
-        super(Categories.Player, "rocket-elytra", "Automatically equips elytra when right-clicking a rock while in the air, then uses a rocket.");
+        super(Categories.Player, "rocket-elytra", "Automatically equips elytra when right-clicking a rocket while in the air, then uses a rocket.");
     }
 
     @Override

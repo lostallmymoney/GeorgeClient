@@ -13,6 +13,7 @@ logs
 *.iws
 *.ipr
 *.iml
+.vscode/
 .idea/*
 !.idea/copyright/*
 !.idea/scopes/*
