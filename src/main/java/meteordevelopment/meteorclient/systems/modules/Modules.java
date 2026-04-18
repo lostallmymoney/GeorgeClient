@@ -742,6 +742,7 @@ public class Modules extends System<Modules> {
         add(new LogoutSpots());
         add(new Marker());
         add(new Nametags());
+        add(new NewChunks());
         add(new NoFog());
         add(new NoEntityDistanceLimit());
         add(new NoRender());
@@ -781,6 +782,7 @@ public class Modules extends System<Modules> {
         add(new PacketMine());
         add(new StashFinder());
         add(new SpawnProofer());
+        add(new StrongholdFinder());
         add(new Timer());
         add(new VeinMiner());
 
@@ -794,6 +796,8 @@ public class Modules extends System<Modules> {
 
     private void initMisc() {
         add(new AntiPacketKick());
+        add(new AntiCheatDetect());
+        add(new AutoConfig());
         add(new AutoReconnect());
         add(new BetterBeacons());
         add(new BetterChat());
@@ -813,5 +817,6 @@ public class Modules extends System<Modules> {
         add(new SoundBlocker());
         add(new Spam());
         add(new Swarm());
+        add(new Teams());
     }
 }

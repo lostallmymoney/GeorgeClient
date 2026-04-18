@@ -150,7 +150,8 @@ public class AutoEat extends Module {
     @EventHandler(priority = EventPriority.LOW)
     private void onTick(TickEvent.Pre event) {
         // Don't eat if AutoGap is already eating
-        if (Modules.get().get(AutoGap.class).isEating()) return;
+        AutoGap autoGap = Modules.get().get(AutoGap.class);
+        if (autoGap != null && autoGap.isEating()) return;
 
         // case 1: Already eating
         if (eating) {

@@ -8,6 +8,7 @@ package meteordevelopment.meteorclient.systems.friends;
 import com.mojang.util.UndashedUuid;
 import meteordevelopment.meteorclient.systems.System;
 import meteordevelopment.meteorclient.systems.Systems;
+import meteordevelopment.meteorclient.systems.modules.misc.Teams;
 import meteordevelopment.meteorclient.utils.misc.NbtUtils;
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 import net.minecraft.client.network.PlayerListEntry;
@@ -78,7 +79,7 @@ public class Friends extends System<Friends> implements Iterable<Friend> {
     }
 
     public boolean shouldAttack(PlayerEntity player) {
-        return !isFriend(player);
+        return !isFriend(player) && Teams.shouldAttack(player);
     }
 
     public int count() {

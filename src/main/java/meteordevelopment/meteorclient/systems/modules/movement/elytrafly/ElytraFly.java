@@ -16,6 +16,7 @@ import meteordevelopment.meteorclient.systems.modules.Categories;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.movement.elytrafly.modes.Bounce;
+import meteordevelopment.meteorclient.systems.modules.movement.elytrafly.modes.NewPacket;
 import meteordevelopment.meteorclient.systems.modules.movement.elytrafly.modes.Packet;
 import meteordevelopment.meteorclient.systems.modules.movement.elytrafly.modes.Pitch40;
 import meteordevelopment.meteorclient.systems.modules.movement.elytrafly.modes.Vanilla;
@@ -484,7 +485,10 @@ public class ElytraFly extends Module {
     }
 
     public boolean canPacketEfly() {
-        return isActive() && flightMode.get() == ElytraFlightModes.Packet && mc.player.getEquippedStack(EquipmentSlot.CHEST).contains(DataComponentTypes.GLIDER) && !mc.player.isOnGround();
+        return isActive()
+            && (flightMode.get() == ElytraFlightModes.Packet || flightMode.get() == ElytraFlightModes.NewPacket)
+            && mc.player.getEquippedStack(EquipmentSlot.CHEST).contains(DataComponentTypes.GLIDER)
+            && !mc.player.isOnGround();
     }
 
     @EventHandler
@@ -513,6 +517,7 @@ public class ElytraFly extends Module {
         switch (mode) {
             case Vanilla -> currentMode = new Vanilla();
             case Packet -> currentMode = new Packet();
+            case NewPacket -> currentMode = new NewPacket();
             case Pitch40 -> {
                 currentMode = new Pitch40();
                 autoPilot.set(false); // Pitch 40 is an autopilot of its own
