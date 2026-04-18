@@ -194,8 +194,7 @@ public class InvUtils {
         if (fromId == -1 || toId == -1) return false;
         if (fromId == toId) return true;
 
-        boolean hadEmptyCursor = mc.player.currentScreenHandler.getCursorStack().isEmpty();
-        if (!hadEmptyCursor) return false;
+        if (!mc.player.currentScreenHandler.getCursorStack().isEmpty() && !tryStoreCursorInPlayerInventory()) return false;
 
         pickupClick(fromId);
         pickupClick(toId);
@@ -260,14 +259,78 @@ public class InvUtils {
         if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, ScreenHandler.EMPTY_SPACE_SLOT_INDEX, 0, SlotActionType.PICKUP, mc.player);
     }
 
+    public static boolean tryStoreCursorInPlayerInventory(int... preferredSlots) {
+        if (mc.player == null || mc.interactionManager == null) return false;
+        if (mc.player.currentScreenHandler.getCursorStack().isEmpty()) return true;
+
+        for (int preferredSlot : preferredSlots) {
+            if (tryStoreCursorInPlayerSlot(preferredSlot) && mc.player.currentScreenHandler.getCursorStack().isEmpty()) return true;
+        }
+
+        for (int i = SlotUtils.MAIN_START; i <= SlotUtils.MAIN_END; i++) {
+            if (containsSlot(preferredSlots, i)) continue;
+            if (tryStoreCursorInPlayerSlot(i) && mc.player.currentScreenHandler.getCursorStack().isEmpty()) return true;
+        }
+
+        for (int i = SlotUtils.HOTBAR_START; i <= SlotUtils.HOTBAR_END; i++) {
+            if (containsSlot(preferredSlots, i)) continue;
+            if (tryStoreCursorInPlayerSlot(i) && mc.player.currentScreenHandler.getCursorStack().isEmpty()) return true;
+        }
+
+        if (!containsSlot(preferredSlots, SlotUtils.OFFHAND) && tryStoreCursorInPlayerSlot(SlotUtils.OFFHAND)) {
+            return mc.player.currentScreenHandler.getCursorStack().isEmpty();
+        }
+
+        return mc.player.currentScreenHandler.getCursorStack().isEmpty();
+    }
+
+    private static boolean tryStoreCursorInPlayerSlot(int slotIndex) {
+        if (mc.player == null) return false;
+        if (!isPlayerStorageSlot(slotIndex)) return false;
+
+        int slotId = SlotUtils.indexToId(slotIndex);
+        if (slotId < 0 || slotId >= mc.player.currentScreenHandler.slots.size()) return false;
+
+        ItemStack cursorStack = mc.player.currentScreenHandler.getCursorStack();
+        if (cursorStack.isEmpty()) return true;
+
+        var slot = mc.player.currentScreenHandler.getSlot(slotId);
+        ItemStack slotStack = slot.getStack();
+        boolean canPlaceInEmpty = slotStack.isEmpty() && slot.canInsert(cursorStack);
+        boolean canMerge = ItemStack.areItemsAndComponentsEqual(slotStack, cursorStack) && slotStack.getCount() < slotStack.getMaxCount();
+        if (!canPlaceInEmpty && !canMerge) return false;
+
+        int beforeCount = cursorStack.getCount();
+        mc.interactionManager.clickSlot(
+            mc.player.currentScreenHandler.syncId,
+            slotId,
+            PICKUP_LEFT,
+            SlotActionType.PICKUP,
+            mc.player
+        );
+
+        ItemStack after = mc.player.currentScreenHandler.getCursorStack();
+        return after.isEmpty() || after.getCount() < beforeCount;
+    }
+
+    private static boolean containsSlot(int[] slots, int slot) {
+        for (int value : slots) {
+            if (value == slot) return true;
+        }
+
+        return false;
+    }
+
+    private static boolean isPlayerStorageSlot(int slot) {
+        return SlotUtils.isHotbar(slot) || SlotUtils.isMain(slot) || slot == SlotUtils.OFFHAND;
+    }
+
     public static class Action {
         private SlotActionType type = null;
         private boolean two = false;
         private int from = -1;
         private int to = -1;
         private int data = 0;
-
-        private boolean isRecursive = false;
 
         private Action() {
         }
@@ -374,7 +437,21 @@ public class InvUtils {
         // Other
 
         private void run() {
+            if (mc.player == null || mc.interactionManager == null) {
+                reset();
+                return;
+            }
+
             boolean hadEmptyCursor = mc.player.currentScreenHandler.getCursorStack().isEmpty();
+            if (!hadEmptyCursor) {
+                boolean normalized = InvUtils.tryStoreCursorInPlayerInventory();
+                if (!normalized && type == SlotActionType.PICKUP) {
+                    reset();
+                    return;
+                }
+
+                hadEmptyCursor = mc.player.currentScreenHandler.getCursorStack().isEmpty();
+            }
 
             if (type == SlotActionType.SWAP) {
                 data = from;
@@ -391,23 +468,23 @@ public class InvUtils {
             int preFrom = from;
             int preTo = to;
 
+            reset();
+
+            if (hadEmptyCursor && preType == SlotActionType.PICKUP && preTwo && (preFrom != -1 && preTo != -1) && !mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
+                pickupClick(preFrom);
+            }
+        }
+
+        private void click(int id) {
+            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, id, data, type, mc.player);
+        }
+
+        private void reset() {
             type = null;
             two = false;
             from = -1;
             to = -1;
             data = 0;
-
-            if (!isRecursive && hadEmptyCursor && preType == SlotActionType.PICKUP && preTwo && (preFrom != -1 && preTo != -1) && !mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
-                isRecursive = true;
-                InvUtils.click().slotId(preFrom);
-                isRecursive = false;
-            }
-
-
-        }
-
-        private void click(int id) {
-            mc.interactionManager.clickSlot(mc.player.currentScreenHandler.syncId, id, data, type, mc.player);
         }
     }
 }

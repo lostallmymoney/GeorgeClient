@@ -340,11 +340,7 @@ public class InventoryTweaks extends Module {
         if (!sortingEnabled.get() || !(mc.currentScreen instanceof HandledScreen<?> screen) || sorter != null || (mc.player.isCreative() && disableInCreative.get()))
             return false;
 
-        if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
-            FindItemResult empty = InvUtils.findEmpty();
-            if (!empty.found()) InvUtils.click().slot(-999);
-            else InvUtils.click().slot(empty.slot());
-        }
+        if (!mc.player.currentScreenHandler.getCursorStack().isEmpty() && !InvUtils.tryStoreCursorInPlayerInventory()) return false;
 
         Slot focusedSlot = ((HandledScreenAccessor) screen).meteor$getFocusedSlot();
         if (focusedSlot == null) return false;
@@ -377,6 +373,11 @@ public class InventoryTweaks extends Module {
 
     @EventHandler
     private void onTickPost(TickEvent.Post event) {
+        if (Utils.canUpdate() && mc.currentScreen == null && !mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
+            InvUtils.tryStoreCursorInPlayerInventory();
+            if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) return;
+        }
+
         // Auto Drop
         if (!Utils.canUpdate() || mc.currentScreen instanceof HandledScreen<?> || autoDropItems.get().isEmpty()) return;
 

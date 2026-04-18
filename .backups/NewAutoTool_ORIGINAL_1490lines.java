@@ -44,8 +44,8 @@ import net.minecraft.item.Items;
 import net.minecraft.item.ShearsItem;
 import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.registry.tag.ItemTags;
-import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.hit.BlockHitResult;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -282,24 +282,6 @@ public class NewAutoTool extends Module {
         .build()
     );
 
-    private final Setting<Boolean> lastMoveStuckItemProtection = sgGeneral.add(new BoolSetting.Builder()
-        .name("last-move-stuck-item-protection")
-        .description("Pauses Auto-tool inventory moves and tries to return hidden cursor items to the last intended slot after a short rollback window.")
-        .defaultValue(true)
-        .visible(this::showAutoToolSettings)
-        .build()
-    );
-
-    private final Setting<Integer> lastMoveStuckItemCheckTicks = sgGeneral.add(new IntSetting.Builder()
-        .name("last-move-stuck-item-check-ticks")
-        .description("Ticks to keep the last move target around before treating a hidden cursor stack as stuck.")
-        .defaultValue(2)
-        .range(0, 10)
-        .sliderRange(0, 10)
-        .visible(() -> showAutoToolSettings() && lastMoveStuckItemProtection.get())
-        .build()
-    );
-
     private final Setting<Boolean> pauseWhenAutoEat = sgGeneral.add(new BoolSetting.Builder()
         .name("pause-when-auto-eat")
         .description("Pauses Auto-tool switching and restore while AutoEat is actively eating.")
@@ -347,10 +329,7 @@ public class NewAutoTool extends Module {
     private int switchBackSlot = -1;
     private HotbarStackSignature switchBackSignature;
     private PendingSwitch pendingSwitch;
-    private final List<BorrowSession> borrowSessions = new ArrayList<>();
-    private int cursorProtectionTicksLeft;
-    private int lastMoveTargetSlot = -1;
-    private int lastMoveFallbackSlot = -1;
+    private BorrowSession borrowSession;
     private boolean syncingBackboneActivation;
     private boolean baritoneReflectionChecked;
     private Method baritoneGetProviderMethod;
@@ -404,8 +383,6 @@ public class NewAutoTool extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (handleStuckCursorProtection()) return;
-
         tickAutoTool();
         autoMendSubmodule.tick();
     }
@@ -416,25 +393,26 @@ public class NewAutoTool extends Module {
     }
 
     private void resetToolState(boolean restoreBorrowSession) {
-        if (restoreBorrowSession && !borrowSessions.isEmpty()) closeBorrowSessions(true);
+        if (restoreBorrowSession && borrowSession != null) closeBorrowSession(true);
 
         breakAttemptGraceTicks = 0;
         managedHotbarSlot = -1;
 
         pendingSwitch = null;
-        borrowSessions.clear();
-        clearCursorProtectionState();
+        borrowSession = null;
 
         clearSwitchBackState();
     }
 
     private void tickAutoTool() {
-        if (!(toolSubmodule.get() || pendingSwitch != null || !borrowSessions.isEmpty() || breakAttemptGraceTicks > 0)) return;
+        if (!(toolSubmodule.get() || pendingSwitch != null || borrowSession != null || breakAttemptGraceTicks > 0)) return;
 
         if (!toolSubmodule.get()) pendingSwitch = null;
 
         boolean externalSwapPause = isExternalSwapPauseActive();
-        if (externalSwapPause) return;
+        if (externalSwapPause) {
+            return;
+        }
 
         if (breakAttemptGraceTicks > 0) breakAttemptGraceTicks--;
 
@@ -452,8 +430,9 @@ public class NewAutoTool extends Module {
             restoreBorrowOnRelease();
             restoreSwitchBackOnRelease();
 
-            if (pendingSwitch == null && borrowSessions.isEmpty()) managedHotbarSlot = -1;
+            if (pendingSwitch == null && borrowSession == null) managedHotbarSlot = -1;
         }
+
     }
 
     private void onStartBreakingBlockAutoTool(StartBreakingBlockEvent event) {
@@ -502,12 +481,14 @@ public class NewAutoTool extends Module {
     }
 
     private void restoreBorrowOnRelease() {
-        if (borrowSessions.isEmpty()) return;
+        if (borrowSession == null) return;
 
-        for (int i = borrowSessions.size() - 1; i >= 0; i--) {
-            BorrowSession session = borrowSessions.get(i);
-            closeBorrowSession(session, session.restoreOnRelease());
-        }
+        boolean shouldRestore = switch (borrowSession.type) {
+            case Inventory -> inventorySwitchBack.get();
+            case OffHand -> offHandSwitchBack.get();
+        };
+
+        closeBorrowSession(shouldRestore);
     }
 
     private void restoreSwitchBackOnRelease() {
@@ -516,7 +497,7 @@ public class NewAutoTool extends Module {
             return;
         }
 
-        if (switchBackSlot == -1 || !borrowSessions.isEmpty() || pendingSwitch != null) return;
+        if (switchBackSlot == -1 || borrowSession != null || pendingSwitch != null) return;
 
         int targetSlot = switchBackSlot;
         if (switchBackSignature != null && !hotbarSignatureAt(targetSlot, switchBackSignature)) {
@@ -546,6 +527,14 @@ public class NewAutoTool extends Module {
     private boolean switchToHotbar(int slot) {
         if (!SlotUtils.isHotbar(slot)) return false;
 
+        if (borrowSession != null) {
+            boolean shouldRestore = switch (borrowSession.type) {
+                case Inventory -> inventorySwitchBack.get();
+                case OffHand -> offHandSwitchBack.get();
+            };
+            closeBorrowSession(shouldRestore);
+        }
+
         captureSwitchBackIfNeeded();
         managedHotbarSlot = slot;
         return InvUtils.swap(slot, false);
@@ -558,11 +547,18 @@ public class NewAutoTool extends Module {
         ItemStack sourceStack = mc.player.getInventory().getStack(sourceSlot);
         if (sourceStack.isEmpty()) return false;
 
-        BorrowSession existing = findBorrowSession(BorrowType.Inventory, sourceSlot);
-        if (existing != null && SlotUtils.isHotbar(existing.hotbarSlot)) {
-            if (mc.player.getInventory().getSelectedSlot() != existing.hotbarSlot) InvUtils.swap(existing.hotbarSlot, false);
-            managedHotbarSlot = existing.hotbarSlot;
+        if (borrowSession != null && borrowSession.type == BorrowType.Inventory && borrowSession.sourceSlot == sourceSlot && SlotUtils.isHotbar(borrowSession.hotbarSlot)) {
+            if (mc.player.getInventory().getSelectedSlot() != borrowSession.hotbarSlot) InvUtils.swap(borrowSession.hotbarSlot, false);
+            managedHotbarSlot = borrowSession.hotbarSlot;
             return true;
+        }
+
+        if (borrowSession != null) {
+            boolean shouldRestore = switch (borrowSession.type) {
+                case Inventory -> inventorySwitchBack.get();
+                case OffHand -> offHandSwitchBack.get();
+            };
+            closeBorrowSession(shouldRestore);
         }
 
         int hotbarSlot = resolveManagedHotbarSlot();
@@ -571,14 +567,16 @@ public class NewAutoTool extends Module {
         captureSwitchBackIfNeeded();
         if (mc.player.getInventory().getSelectedSlot() != hotbarSlot) InvUtils.swap(hotbarSlot, false);
 
+        ItemStack originalHotbarStack = mc.player.getInventory().getStack(hotbarSlot).copy();
         quickSwapAndSync(hotbarSlot, sourceSlot);
 
-        borrowSessions.add(new BorrowSession(
+        borrowSession = new BorrowSession(
             BorrowType.Inventory,
             sourceSlot,
             hotbarSlot,
-            inventorySwitchBack.get()
-        ));
+            originalHotbarStack.isEmpty(),
+            originalHotbarStack.isEmpty() ? null : new HotbarStackSignature(originalHotbarStack)
+        );
 
         managedHotbarSlot = hotbarSlot;
         return true;
@@ -590,11 +588,18 @@ public class NewAutoTool extends Module {
         ItemStack offHand = mc.player.getOffHandStack();
         if (offHand.isEmpty()) return false;
 
-        BorrowSession existing = findBorrowSession(BorrowType.OffHand, SlotUtils.OFFHAND);
-        if (existing != null && SlotUtils.isHotbar(existing.hotbarSlot)) {
-            if (mc.player.getInventory().getSelectedSlot() != existing.hotbarSlot) InvUtils.swap(existing.hotbarSlot, false);
-            managedHotbarSlot = existing.hotbarSlot;
+        if (borrowSession != null && borrowSession.type == BorrowType.OffHand && SlotUtils.isHotbar(borrowSession.hotbarSlot)) {
+            if (mc.player.getInventory().getSelectedSlot() != borrowSession.hotbarSlot) InvUtils.swap(borrowSession.hotbarSlot, false);
+            managedHotbarSlot = borrowSession.hotbarSlot;
             return true;
+        }
+
+        if (borrowSession != null) {
+            boolean shouldRestore = switch (borrowSession.type) {
+                case Inventory -> inventorySwitchBack.get();
+                case OffHand -> offHandSwitchBack.get();
+            };
+            closeBorrowSession(shouldRestore);
         }
 
         int hotbarSlot = resolveManagedHotbarSlot();
@@ -603,45 +608,98 @@ public class NewAutoTool extends Module {
         captureSwitchBackIfNeeded();
         if (mc.player.getInventory().getSelectedSlot() != hotbarSlot) InvUtils.swap(hotbarSlot, false);
 
+        ItemStack originalHotbarStack = mc.player.getInventory().getStack(hotbarSlot).copy();
         quickSwapAndSync(SlotUtils.OFFHAND, hotbarSlot);
 
-        borrowSessions.add(new BorrowSession(
+        borrowSession = new BorrowSession(
             BorrowType.OffHand,
             SlotUtils.OFFHAND,
             hotbarSlot,
-            offHandSwitchBack.get()
-        ));
+            originalHotbarStack.isEmpty(),
+            originalHotbarStack.isEmpty() ? null : new HotbarStackSignature(originalHotbarStack)
+        );
 
         managedHotbarSlot = hotbarSlot;
         return true;
     }
 
-    private void closeBorrowSessions(boolean restore) {
-        for (int i = borrowSessions.size() - 1; i >= 0; i--) {
-            closeBorrowSession(borrowSessions.get(i), restore);
+    private void closeBorrowSession(boolean restore) {
+        if (borrowSession == null) return;
+
+        BorrowSession session = borrowSession;
+        borrowSession = null;
+
+        if (!restore) return;
+        if (!SlotUtils.isHotbar(session.hotbarSlot)) return;
+
+        if (session.type == BorrowType.Inventory) {
+            if (session.sourceSlot >= 0 && session.sourceSlot <= INVENTORY_END) quickSwapAndSync(session.hotbarSlot, session.sourceSlot);
+        } else {
+            quickSwapAndSync(SlotUtils.OFFHAND, session.hotbarSlot);
         }
+
+        if (hotbarMatchesOriginal(session)) return;
+
+        if (session.originalWasEmpty) {
+            moveHotbarToAnyEmptySlot(session.hotbarSlot);
+            return;
+        }
+
+        if (session.originalSignature == null) return;
+        int source = findSlotForSignature(session.originalSignature, session.sourceSlot);
+        if (source != -1) moveSlotToHotbar(source, session.hotbarSlot);
     }
 
-    private void closeBorrowSession(BorrowSession session, boolean restore) {
-        if (session == null) return;
-        if (!restore) {
-            borrowSessions.remove(session);
-            return;
-        }
-        if (!SlotUtils.isHotbar(session.hotbarSlot)) {
-            borrowSessions.remove(session);
-            return;
+    private boolean hotbarMatchesOriginal(BorrowSession session) {
+        ItemStack current = mc.player.getInventory().getStack(session.hotbarSlot);
+        if (session.originalWasEmpty) return current.isEmpty();
+        if (session.originalSignature == null) return true;
+        return signatureMatches(current, session.originalSignature);
+    }
+
+    private boolean moveHotbarToAnyEmptySlot(int hotbarSlot) {
+        ItemStack current = mc.player.getInventory().getStack(hotbarSlot);
+        if (current.isEmpty()) return true;
+
+        int empty = findEmptyRestoreSlot(hotbarSlot);
+        if (empty == -1) return false;
+
+        quickSwapAndSync(hotbarSlot, empty);
+        return mc.player.getInventory().getStack(hotbarSlot).isEmpty();
+    }
+
+    private int findEmptyRestoreSlot(int excludedHotbarSlot) {
+        for (int i = INVENTORY_START; i <= INVENTORY_END; i++) {
+            if (mc.player.getInventory().getStack(i).isEmpty()) return i;
         }
 
-        boolean restored = false;
-        if (session.type == BorrowType.Inventory) {
-            restored = session.sourceSlot >= 0 && session.sourceSlot <= INVENTORY_END && quickSwapAndSync(session.hotbarSlot, session.sourceSlot);
-        }
-        else {
-            restored = quickSwapAndSync(SlotUtils.OFFHAND, session.hotbarSlot);
+        for (int i = HOTBAR_START; i <= HOTBAR_END; i++) {
+            if (i == excludedHotbarSlot) continue;
+            if (mc.player.getInventory().getStack(i).isEmpty()) return i;
         }
 
-        if (restored) borrowSessions.remove(session);
+        return -1;
+    }
+
+    private int findSlotForSignature(HotbarStackSignature signature, int preferredSlot) {
+        if (preferredSlot >= HOTBAR_START && preferredSlot <= INVENTORY_END && signatureMatches(mc.player.getInventory().getStack(preferredSlot), signature)) {
+            return preferredSlot;
+        }
+        if (preferredSlot == SlotUtils.OFFHAND && signatureMatches(mc.player.getOffHandStack(), signature)) return SlotUtils.OFFHAND;
+
+        for (int i = HOTBAR_START; i <= INVENTORY_END; i++) {
+            if (signatureMatches(mc.player.getInventory().getStack(i), signature)) return i;
+        }
+
+        if (signatureMatches(mc.player.getOffHandStack(), signature)) return SlotUtils.OFFHAND;
+        return -1;
+    }
+
+    private void moveSlotToHotbar(int sourceSlot, int hotbarSlot) {
+        if (sourceSlot == hotbarSlot || !SlotUtils.isHotbar(hotbarSlot)) return;
+
+        if (sourceSlot == SlotUtils.OFFHAND) quickSwapAndSync(SlotUtils.OFFHAND, hotbarSlot);
+        else quickSwapAndSync(hotbarSlot, sourceSlot);
     }
 
     private boolean hotbarSignatureAt(int hotbarSlot, HotbarStackSignature signature) {
@@ -661,12 +719,9 @@ public class NewAutoTool extends Module {
         return signature != null && !stack.isEmpty() && ItemStack.areItemsAndComponentsEqual(stack, signature.snapshot);
     }
 
-    private boolean quickSwapAndSync(int fromSlot, int toSlot) {
-        if (!prepareQuickSwap(fromSlot, toSlot)) return false;
-
+    private void quickSwapAndSync(int fromSlot, int toSlot) {
         InvUtils.quickSwap().fromId(fromSlot).to(toSlot);
         syncSelectedSlot();
-        return true;
     }
 
     private void syncSelectedSlot() {
@@ -674,8 +729,6 @@ public class NewAutoTool extends Module {
     }
 
     private int resolveManagedHotbarSlot() {
-        BorrowSession latestBorrow = getLatestBorrowSession();
-        if (latestBorrow != null && SlotUtils.isHotbar(latestBorrow.hotbarSlot)) return latestBorrow.hotbarSlot;
         if (SlotUtils.isHotbar(managedHotbarSlot)) return managedHotbarSlot;
 
         int selected = mc.player.getInventory().getSelectedSlot();
@@ -683,7 +736,7 @@ public class NewAutoTool extends Module {
         if (!useMultipleHotbarSlots.get()) return selected;
 
         ItemStack selectedStack = mc.player.getInventory().getStack(selected);
-        if (!hasBorrowSessionOnHotbar(selected) && !isProtectedBorrowSlot(selectedStack)) return selected;
+        if (!isProtectedBorrowSlot(selectedStack)) return selected;
 
         return findPreferredBorrowSlot(selected);
     }
@@ -699,26 +752,22 @@ public class NewAutoTool extends Module {
     private int findPreferredBorrowSlot(int avoidSlot) {
         for (int i = HOTBAR_START; i <= HOTBAR_END; i++) {
             if (i == avoidSlot) continue;
-            if (hasBorrowSessionOnHotbar(i)) continue;
             if (mc.player.getInventory().getStack(i).isEmpty()) return i;
         }
 
         for (int i = HOTBAR_START; i <= HOTBAR_END; i++) {
             if (i == avoidSlot) continue;
-            if (hasBorrowSessionOnHotbar(i)) continue;
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (!isProtectedBorrowSlot(stack)) return i;
         }
 
         for (int i = HOTBAR_START; i <= HOTBAR_END; i++) {
             if (i == avoidSlot) continue;
-            if (hasBorrowSessionOnHotbar(i)) continue;
             ItemStack stack = mc.player.getInventory().getStack(i);
             if (!isDoNotReplaceStack(stack)) return i;
         }
 
         for (int i = HOTBAR_START; i <= HOTBAR_END; i++) {
-            if (hasBorrowSessionOnHotbar(i)) continue;
             if (i != avoidSlot) return i;
         }
 
@@ -726,92 +775,38 @@ public class NewAutoTool extends Module {
     }
 
     private boolean tryReturnNearBrokenBorrowedTool() {
-        for (int i = borrowSessions.size() - 1; i >= 0; i--) {
-            BorrowSession session = borrowSessions.get(i);
-            if (session.type != BorrowType.Inventory || !SlotUtils.isHotbar(session.hotbarSlot)) continue;
+        if (borrowSession == null || borrowSession.type != BorrowType.Inventory) return false;
+        if (!SlotUtils.isHotbar(borrowSession.hotbarSlot)) return false;
 
-            ItemStack borrowed = mc.player.getInventory().getStack(session.hotbarSlot);
-            if (!isTool(borrowed) || !shouldStopUsing(borrowed)) continue;
+        ItemStack borrowed = mc.player.getInventory().getStack(borrowSession.hotbarSlot);
+        if (!isTool(borrowed) || !shouldStopUsing(borrowed)) return false;
 
-            closeBorrowSession(session, true);
-            pendingSwitch = null;
-            managedHotbarSlot = -1;
-            return true;
-        }
-
-        return false;
-    }
-
-    private boolean handleStuckCursorProtection() {
-        if (mc.player == null || mc.interactionManager == null) return false;
-
-        ItemStack cursorStack = mc.player.currentScreenHandler.getCursorStack();
-        if (cursorStack.isEmpty()) {
-            if (cursorProtectionTicksLeft > 0) cursorProtectionTicksLeft--;
-            else if (cursorProtectionTicksLeft == 0) clearCursorProtectionState();
-            return false;
-        }
-
-        if (mc.currentScreen != null) return true;
-        if (!lastMoveStuckItemProtection.get()) return true;
-
-        if (cursorProtectionTicksLeft > 0) {
-            cursorProtectionTicksLeft--;
-            return true;
-        }
-
-        if (InvUtils.tryStoreCursorInPlayerInventory(lastMoveTargetSlot, lastMoveFallbackSlot)) clearCursorProtectionState();
+        closeBorrowSession(true);
+        pendingSwitch = null;
+        managedHotbarSlot = -1;
         return true;
-    }
-
-    private boolean prepareQuickSwap(int fromSlot, int toSlot) {
-        if (mc.player == null || mc.interactionManager == null) return false;
-
-        if (!mc.player.currentScreenHandler.getCursorStack().isEmpty()) {
-            if (mc.currentScreen != null) return false;
-            if (!lastMoveStuckItemProtection.get()) return false;
-            if (!InvUtils.tryStoreCursorInPlayerInventory(toSlot, fromSlot)) return false;
-        }
-
-        rememberLastMove(toSlot, fromSlot);
-        return true;
-    }
-
-    private void rememberLastMove(int targetSlot, int fallbackSlot) {
-        lastMoveTargetSlot = sanitizeCursorProtectionSlot(targetSlot);
-        lastMoveFallbackSlot = sanitizeCursorProtectionSlot(fallbackSlot);
-        cursorProtectionTicksLeft = lastMoveStuckItemCheckTicks.get();
-    }
-
-    private void clearCursorProtectionState() {
-        cursorProtectionTicksLeft = -1;
-        lastMoveTargetSlot = -1;
-        lastMoveFallbackSlot = -1;
-    }
-
-    private int sanitizeCursorProtectionSlot(int slotIndex) {
-        return SlotUtils.isHotbar(slotIndex) || (slotIndex >= INVENTORY_START && slotIndex <= INVENTORY_END) || slotIndex == SlotUtils.OFFHAND
-            ? slotIndex
-            : -1;
     }
 
     private void tryScheduleFromCrosshairBlock() {
-        if (mc.interactionManager != null && mc.interactionManager.isBreakingBlock() && mc.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor) {
-            BlockPos breakingPos = accessor.meteor$getCurrentBreakingBlockPos();
-            if (breakingPos != null) {
-                BlockState blockState = mc.world.getBlockState(breakingPos);
-                if (BlockUtils.canBreak(breakingPos, blockState)) {
-                    tryScheduleForBlockState(blockState);
-                    return;
-                }
-            }
-        }
-
         if (mc.crosshairTarget instanceof BlockHitResult hit) {
             BlockPos crosshairPos = hit.getBlockPos();
             BlockState blockState = mc.world.getBlockState(crosshairPos);
-            if (BlockUtils.canBreak(crosshairPos, blockState)) tryScheduleForBlockState(blockState);
+            if (BlockUtils.canBreak(crosshairPos, blockState)) {
+                tryScheduleForBlockState(blockState);
+                return;
+            }
         }
+
+        if (mc.interactionManager == null || !mc.interactionManager.isBreakingBlock()) return;
+        if (!(mc.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor)) return;
+
+        BlockPos breakingPos = accessor.meteor$getCurrentBreakingBlockPos();
+        if (breakingPos == null) return;
+
+        BlockState blockState = mc.world.getBlockState(breakingPos);
+        if (!BlockUtils.canBreak(breakingPos, blockState)) return;
+
+        tryScheduleForBlockState(blockState);
     }
 
     private void tryScheduleForBlockState(BlockState blockState) {
@@ -829,8 +824,13 @@ public class NewAutoTool extends Module {
         };
 
         Candidate candidate = null;
-        if (hasPreferredVeto()) candidate = bestCandidateAcrossOrigins(blockState, currentScore, shouldReplaceCurrent, true, origins);
-        if (candidate == null) candidate = bestCandidateAcrossOrigins(blockState, currentScore, shouldReplaceCurrent, false, origins);
+        if (hasPreferredVeto()) {
+            candidate = bestCandidateAcrossOrigins(blockState, currentScore, shouldReplaceCurrent, true, origins);
+        }
+
+        if (candidate == null) {
+            candidate = bestCandidateAcrossOrigins(blockState, currentScore, shouldReplaceCurrent, false, origins);
+        }
 
         if (candidate != null) scheduleSwitch(candidate);
     }
@@ -1005,26 +1005,19 @@ public class NewAutoTool extends Module {
     }
 
     private boolean isAttackPressed() {
-        return isAttackKeyHeldOnBreakableBlock()
+        return mc.options.attackKey.isPressed()
             || (mc.interactionManager != null && mc.interactionManager.isBreakingBlock())
             || isBaritoneProcessActive();
     }
 
-    private boolean isAttackKeyHeldOnBreakableBlock() {
-        if (!mc.options.attackKey.isPressed()) return false;
-        if (mc.world == null) return false;
-        if (!(mc.crosshairTarget instanceof BlockHitResult hit)) return false;
-
-        BlockPos pos = hit.getBlockPos();
-        BlockState blockState = mc.world.getBlockState(pos);
-        return BlockUtils.canBreak(pos, blockState);
-    }
-
     private boolean shouldDelayRestoreForExternalHotbarControl() {
-        if (borrowSessions.isEmpty()) return false;
+        if (borrowSession == null) return false;
+        if (!SlotUtils.isHotbar(borrowSession.hotbarSlot)) return false;
 
         if (isBaritoneProcessActive()) return true;
-        return isExternalSwapPauseActive();
+        if (isExternalSwapPauseActive()) return true;
+
+        return mc.player.getInventory().getSelectedSlot() != borrowSession.hotbarSlot;
     }
 
     private boolean isBaritoneProcessActive() {
@@ -1132,17 +1125,11 @@ public class NewAutoTool extends Module {
     }
 
     public boolean isBorrowRestoreActive() {
-        return toolSubmodule.get() && (pendingSwitch != null || !borrowSessions.isEmpty());
+        return toolSubmodule.get() && (pendingSwitch != null || borrowSession != null);
     }
 
     private boolean isBorrowingOffHandForAutoMend() {
-        if (pendingSwitch != null && pendingSwitch.type == SwitchType.OffHand) return true;
-
-        for (BorrowSession session : borrowSessions) {
-            if (session.type == BorrowType.OffHand) return true;
-        }
-
-        return false;
+        return (borrowSession != null && borrowSession.type == BorrowType.OffHand) || (pendingSwitch != null && pendingSwitch.type == SwitchType.OffHand);
     }
 
     private class AutoMendSubmodule {
@@ -1344,8 +1331,9 @@ public class NewAutoTool extends Module {
             return true;
         }
 
-        private boolean quickSwapPlainAndSync(int fromSlot, int toSlot) {
-            return quickSwapAndSync(fromSlot, toSlot);
+        private void quickSwapPlainAndSync(int fromSlot, int toSlot) {
+            InvUtils.quickSwap().fromId(fromSlot).to(toSlot);
+            syncSelectedSlot();
         }
 
         void toggleEnabled(boolean sendFeedback) {
@@ -1428,30 +1416,10 @@ public class NewAutoTool extends Module {
     }
 
     private record Candidate(int slot, SwitchType type, double score) {}
-    private record BorrowSession(BorrowType type, int sourceSlot, int hotbarSlot, boolean restoreOnRelease) {}
+
+    private record BorrowSession(BorrowType type, int sourceSlot, int hotbarSlot, boolean originalWasEmpty, HotbarStackSignature originalSignature) {}
+
     private record HotbarStackSignature(ItemStack snapshot) {}
-
-    private BorrowSession findBorrowSession(BorrowType type, int sourceSlot) {
-        for (int i = borrowSessions.size() - 1; i >= 0; i--) {
-            BorrowSession session = borrowSessions.get(i);
-            if (session.type == type && session.sourceSlot == sourceSlot) return session;
-        }
-
-        return null;
-    }
-
-    private BorrowSession getLatestBorrowSession() {
-        if (borrowSessions.isEmpty()) return null;
-        return borrowSessions.getLast();
-    }
-
-    private boolean hasBorrowSessionOnHotbar(int hotbarSlot) {
-        for (BorrowSession session : borrowSessions) {
-            if (session.hotbarSlot == hotbarSlot) return true;
-        }
-
-        return false;
-    }
 
     private static class PendingSwitch {
         private SwitchType type;
